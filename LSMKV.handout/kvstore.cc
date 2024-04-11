@@ -58,6 +58,7 @@ void MemTable::put(uint64_t key, const std::string &val)
             double randNum = dis(gen);
             if(randNum >= this->p) return;
             if(list.size() <= height + 1)            
+            if(list.size() <= height + 1)
             {
                 Quadlist *qlist = new Quadlist();
                 qlist->header->below = list[height]->header;
@@ -84,6 +85,7 @@ void MemTable::put(uint64_t key, const std::string &val)
  */
 std::string MemTable::get(uint64_t key , bool &isFind )
 {
+
 	Quadlist *li = frist();
     QuadlistNode * p = li->frist();
     if(p == nullptr) return "";
@@ -203,10 +205,16 @@ bool KVStore::del(uint64_t key)
  */
 void KVStore::reset()
 {
-    for(int i = 0 ; i <= this->sslevel.size() ; i++)
-    {
-        std::string rmName = vlogDir + "/Level" + std::to_string(i);
-    }
+    // for(int i = 0 ; i <= this->sslevel.size() ; i++)
+    // {
+    //     std::string dirName = "./data/vlog/Level" + std::to_string(i);
+    //     for(int j = 0 ; j <= this->sslevel[i].currentNum ; j++)
+    //     {
+    //         std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
+    //         utils::rmfile(fileName);
+    //     }
+    //     utils::rmdir(dirName);
+    // }
 }
 
 /**
@@ -320,12 +328,12 @@ void KVStore::buildSSTable()
     if(sslevel[0].currentNum >= 3)
     {
         //compaction
-        SSTableCOmpaction();
+        SSTableCompaction();
     }
 
 }
 
-void KVStore::SSTableCOmpaction()
+void KVStore::SSTableCompaction()
 {
     
 }
