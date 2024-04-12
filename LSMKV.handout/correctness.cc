@@ -30,6 +30,7 @@ private:
 		for (i = 0; i < max; ++i)
 		{
 			store.put(i, std::string(i + 1, 's'));
+			// std::cout << store.get(i) << std::endl;
 			EXPECT(std::string(i + 1, 's'), store.get(i));
 		}
 		phase();

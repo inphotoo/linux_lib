@@ -57,8 +57,9 @@ struct MemTable
     };
 public:
     std::vector<Quadlist *> list;
-    int p = 0.5;
+    double p = 0.5;
     void put(uint64_t key, const std::string &val);
+    void clear();
     std::string get(uint64_t key , bool &isFind );
     int getSize();
     int getMinKey();
@@ -66,10 +67,9 @@ public:
 
     Quadlist * frist()
     {
-        if(list.size() == 0) list.push_back(new Quadlist) ;
+        if(list.size() == 0)
+            list.push_back(new Quadlist) ;
         return list[0];
-
-        exit(1);
     };
     Quadlist * last(){return list[list.size() - 1];};
     MemTable(){};
@@ -86,11 +86,18 @@ private:
     std::string ssTable;
     std::string dataDir;
     std::string vlogDir;
+    struct ssNode
+    {
+        uint64_t max;
+        uint64_t min;
+        ssNode(uint64_t max , uint64_t min):max(max),min(min){};
+    };
+
     struct ssLevel
     {
         int currentNum;
         int level;
-
+        std::vector<ssNode> ssNodes;
     };
 public:
     MemTable memTable;

@@ -19,17 +19,17 @@ void MemTable::put(uint64_t key, const std::string &val)
         while(p != nullptr)
         {
             //go to the next
-            while(p->succ && (key >= p->key))
+            while(p->succ && (key >= p->key) )
                 p = p->succ;
             //come back
             p = p->prev;
-            if(p->key == key)
+            if(p->key == key && p != f->frist()->prev)
             {
                 //find bottom
                 while(p->below != nullptr)
                     p = p->below;
                 //change the value
-                while(p->above != nullptr)
+                while(p != nullptr)
                     {
                         p->entry = val;
                          p = p->above;
@@ -96,7 +96,8 @@ std::string MemTable::get(uint64_t key , bool &isFind )
         p = p->prev;
         if(p && p->key == key)
         {
-            isFind = true;
+            if(p->entry != "~DELETED~")
+                isFind = true;
             return p->entry;
         }
         else
@@ -109,7 +110,11 @@ std::string MemTable::get(uint64_t key , bool &isFind )
 
 int MemTable::getSize()
 {
-    return this->frist()->frist()->key;
+    return this->list.size();
+}
+void MemTable::clear()
+{
+    list.clear();
 }
 KVStore::KVStore(const std::string &dir, const std::string &vlog) : KVStoreAPI(dir, vlog)
 {
@@ -124,11 +129,11 @@ KVStore::~KVStore()
 
 int MemTable::getMinKey()
 {
-    return this->last()->frist()->key;
+    return this->frist()->frist()->key;
 }
 int MemTable::getMaxKey()
 {
-    return this->last()->last()->key;
+    return this->frist()->last()->key;
 }
 /**
  * Insert/Update the key-value pair.
@@ -173,7 +178,15 @@ std::string KVStore::get(uint64_t key)
         {
             for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
             {
-                std::ifstream(vlogDir + "/Level" + std::to_string(j));
+                if(key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min)
+                {
+                    std::string filename = this->vlogDir + std::to_string(i)+ "/ssTable/" + std::to_string(j);
+                    std::ifstream file(filename);
+                    std::cout << "find in ssTable";
+                    bool isExist = true;
+                    if(isExist)
+                        return "";
+                }
             }
         }
     }
@@ -191,12 +204,28 @@ bool KVStore::del(uint64_t key)
     std::string v = memTable.get(key , isFind);
 
     //Then , we find it in ssTable
-    if(!isFind)
+    if(isFind)
 	{
-
+        memTable.put(key , "~DELETED~");
+        return true;
     }
-    memTable.put(key , "~DELETED~");
-    return true;
+    else
+        for(int i = 0 ; i < this->sslevel.size() ; i++)
+        {
+            for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
+            {
+                if(key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min)
+                {
+                    std::string filename = this->vlogDir + std::to_string(i)+ "/ssTable/" + std::to_string(j);
+                    std::ifstream file(filename);
+                    std::cout << "delt in ssTable";
+                    bool isExist = true;
+                    if(isExist)
+                        return true;
+                }
+            }
+        }
+    return false;
 }
 
 /**
@@ -205,16 +234,17 @@ bool KVStore::del(uint64_t key)
  */
 void KVStore::reset()
 {
-    // for(int i = 0 ; i <= this->sslevel.size() ; i++)
-    // {
-    //     std::string dirName = "./data/vlog/Level" + std::to_string(i);
-    //     for(int j = 0 ; j <= this->sslevel[i].currentNum ; j++)
-    //     {
-    //         std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
-    //         utils::rmfile(fileName);
-    //     }
-    //     utils::rmdir(dirName);
-    // }
+    for(int i = 0 ; i <= this->sslevel.size() ; i++)
+    {
+        std::string dirName = "./data/vlog/Level" + std::to_string(i);
+        if(this->sslevel.size() == 0) return;
+        for(int j = 0 ; j <= this->sslevel[i].currentNum ; j++)
+        {
+            std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
+            utils::rmfile(fileName);
+        }
+        utils::rmdir(dirName);
+    }
 }
 
 /**
@@ -224,7 +254,45 @@ void KVStore::reset()
  */
 void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, std::string>> &list)
 {
-    
+
+    //get menTable frist
+    QuadlistNode * node = this->memTable.frist()->frist();
+    while(node->succ != nullptr)
+    {
+        //if it is between the size , add it into list
+        if(node->key <= key2 && node->key >= key1)
+        {
+            std::pair<uint64_t, std::string> cur_pair;
+            cur_pair.first = node->key ;
+            cur_pair.second = node->entry;
+            list.push_back(cur_pair);
+        }
+        node= node->succ;
+    }
+
+    //Find in ssTable
+    for(int i = 0 ; i < this->sslevel.size() ; i++)
+    {
+        for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
+        {
+            if(key1 <= this->sslevel[i].ssNodes[j].max && key1 >= this->sslevel[i].ssNodes[j].min ||
+                key2 <= this->sslevel[i].ssNodes[j].max && key2 >= this->sslevel[i].ssNodes[j].min)
+            {
+                std::string filename = this->vlogDir + std::to_string(i)+ "/ssTable/" + std::to_string(j);
+                std::ifstream file(filename);
+                // std::cout << "data may in ssTable";
+                bool isExist = true;
+                if(isExist)
+                {
+                    std::pair<uint64_t, std::string> cur_pair;
+                    cur_pair.first = 0 ;
+                    cur_pair.second = "";
+                    list.push_back(cur_pair);
+                }
+
+            }
+        }
+    }
 }
 
 /**
@@ -308,6 +376,7 @@ void KVStore::buildSSTable()
     std::cout << ssTable.length() << std::endl;
     std::cout << current_key;
 
+    //把文件添加到Level0中,并设置每个文件ssTable范围
     std::string fileName ;
     if(this->sslevel.size() == 0)
     {
@@ -317,7 +386,10 @@ void KVStore::buildSSTable()
         sslevel.push_back(s0);
         std::cout << utils::_mkdir( vlogDir + "/Level0" );
     }
+    //
     sslevel[0].currentNum ++;
+    ssNode s(max_key , min_key);
+    sslevel[0].ssNodes.push_back( s);
     fileName = vlogDir + "/Level0/ssTable" + std::to_string(sslevel[0].currentNum );
 
     std::ofstream file(fileName);
@@ -330,7 +402,7 @@ void KVStore::buildSSTable()
         //compaction
         SSTableCompaction();
     }
-
+    this->memTable.clear();
 }
 
 void KVStore::SSTableCompaction()
