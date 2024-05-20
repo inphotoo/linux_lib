@@ -93,6 +93,8 @@ private:
     std::string ssTable;
     std::string dataDir;
     std::string vlogDir;
+    long Head = 0;
+    long Tail = 0;
     struct ssNode
     {
         uint64_t max;
@@ -108,8 +110,10 @@ private:
     };
 public:
     MemTable memTable;
-    std::pmr::vector<ssLevel> sslevel;
+    std::vector<ssLevel> sslevel;
     void buildSSTable();
+
+    void appendVLog();
 
 	KVStore(const std::string &dir, const std::string &vlog);
 
@@ -125,8 +129,12 @@ public:
 
 	void scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, std::string>> &list) override;
 
+
 	void gc(uint64_t chunk_size) override;
 
     void SSTableCompaction() ;
 
+    std::tuple<uint64_t, uint32_t> findInssTable(std::string filename,uint64_t key, bool *isExist);
+
+    std::string readFromVLog(uint64_t dataOffset, uint32_t valueLen);
 };

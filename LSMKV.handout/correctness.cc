@@ -38,6 +38,10 @@ private:
 		// Test after all insertions
 		for (i = 0; i < max; ++i)
         {
+            if(std::string(i + 1, 's') != store.get(i))
+            {
+                std::cerr << store.get(i);
+            }
             EXPECT(std::string(i + 1, 's'), store.get(i));
         }
 		phase();
