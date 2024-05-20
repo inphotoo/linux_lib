@@ -8,6 +8,7 @@
 
 struct QuadlistNode
 {
+
     std::string entry;
     uint64_t key;
     QuadlistNode *prev ;
