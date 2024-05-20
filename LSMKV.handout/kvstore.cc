@@ -14,69 +14,74 @@
  */
 void MemTable::put(uint64_t key, const std::string &val)
 {
-	Quadlist *f = frist();
-        QuadlistNode *p = f->frist();
-        while(p != nullptr)
-        {
-            //go to the next
-            while(p->succ && (key >= p->key) )
-                p = p->succ;
-            //come back
-            p = p->prev;
-            if(p->key == key && p != f->frist()->prev)
-            {
-                //find bottom
-                while(p->below != nullptr)
-                    p = p->below;
-                //change the value
-                while(p != nullptr)
-                    {
-                        p->entry = val;
-                         p = p->above;
-                    }
-                return;
-            }
-            else
-            {
-                if(p->below == nullptr) break;
-                else p = p->below;
-            }
-        }// find the place of insert
-        
 
-        Quadlist *listlast = this->last();
-        listlast->insertAfterAbove(key , val ,p , nullptr);
-
-        // 创建随机数
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<double> dis(0.0, 1.0);
-        int height = 0;
-        p = p->succ;
-        while(true)
+	Quadlist *f = last();
+    QuadlistNode *p = f->frist();
+    while(p != nullptr)
+    {
+        //寻找合适插入的位置
+        while(p->succ && (key >= p->key) )
+            p = p->succ;
+        //向后退一步
+        p = p->prev;
+        //当P的key是目标插入的key且不为表头，全部替换
+        if(p->key == key &&  p->entry != f->frist()->prev->entry)
         {
-            double randNum = dis(gen);
-            if(randNum >= this->p) return;
-            if(list.size() <= height + 1)            
-            if(list.size() <= height + 1)
-            {
-                Quadlist *qlist = new Quadlist();
-                qlist->header->below = list[height]->header;
-                qlist->trailer->below = list[height]->trailer;
-                qlist->insertAfterAbove(key , val , qlist->header , p);
-                p = p->above;
-                list.push_back(qlist);
-                height ++;
-                continue;
-            }
-            Quadlist *qlist = list[height + 1];
-            QuadlistNode *pre = qlist->header;
-            while(pre->succ != qlist->trailer && key > pre->succ->key )
-                pre = pre->succ;
-            qlist->insertAfterAbove(key , val , pre , p);
-            p = p->above;
-            height ++;
+            //找到底部
+            while(p->below != nullptr)
+                p = p->below;
+            //改变当前数值
+            //向上全部修改
+            while(p != nullptr)
+                {
+                    p->entry = val;
+                    p = p->above;
+                }
+            return;
         }
+        else
+        {
+            //如果到达最底层返回，否则继续向下寻找
+            if(p->below == nullptr) break;
+            else p = p->below;
+        }
+    }// find the place of insert
+
+
+    Quadlist *listlast = this->frist();
+    //最底层先插入
+    listlast->insertAfterAbove(key , val ,p , nullptr);
+
+    // 创建随机数
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dis(0.0, 1.0);
+    int height = 0;
+    p = p->succ;
+    while(true)
+    {
+        //如果随机数大于预定概率，则新增一层
+        double randNum = dis(gen);
+        if(randNum >= this->p) return;
+        if(list.size() <= height + 1)
+        {
+            Quadlist *qlist = new Quadlist();
+            qlist->header->below = list[height]->header;
+            qlist->trailer->below = list[height]->trailer;
+            qlist->insertAfterAbove(key , val , qlist->header , p);
+            p = p->above;
+            list.push_back(qlist);
+            height ++;
+            continue;
+        }
+        Quadlist *qlist = list[height + 1];
+        QuadlistNode *pre = qlist->header;
+        while(pre->succ != qlist->trailer && key > pre->succ->key )
+            pre = pre->succ;
+        qlist->insertAfterAbove(key , val , pre , p);
+        p = p->above;
+        height ++;
+    }
 }
 
 /**
@@ -85,8 +90,7 @@ void MemTable::put(uint64_t key, const std::string &val)
  */
 std::string MemTable::get(uint64_t key , bool &isFind )
 {
-
-	Quadlist *li = frist();
+	Quadlist *li = last();
     QuadlistNode * p = li->frist();
     if(p == nullptr) return "";
     while(true)
@@ -94,9 +98,9 @@ std::string MemTable::get(uint64_t key , bool &isFind )
         while(p->succ && (p->key <= key))
             p = p->succ;
         p = p->prev;
-        if(p && p->key == key)
+        if(p && p->key == key && p->entry != li->frist()->prev->entry)
         {
-            if(p->entry != "~DELETED~")
+            if(p->entry != "~DELETED~" )
                 isFind = true;
             return p->entry;
         }
@@ -129,11 +133,11 @@ KVStore::~KVStore()
 
 int MemTable::getMinKey()
 {
-    return this->frist()->frist()->key;
+    return this->last()->frist()->key;
 }
 int MemTable::getMaxKey()
 {
-    return this->frist()->last()->key;
+    return this->last()->last()->key;
 }
 /**
  * Insert/Update the key-value pair.
@@ -200,10 +204,10 @@ std::string KVStore::get(uint64_t key)
 bool KVStore::del(uint64_t key)
 {
     bool isFind = false;
-    // frist , we find in memTable
+    // 首先，在memTable中寻找
     std::string v = memTable.get(key , isFind);
 
-    //Then , we find it in ssTable
+    // 然后，在ssTable中寻找
     if(isFind)
 	{
         memTable.put(key , "~DELETED~");
@@ -259,7 +263,7 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
     QuadlistNode * node = this->memTable.frist()->frist();
     while(node->succ != nullptr)
     {
-        //if it is between the size , add it into list
+        //如果在列表之间，加入列表
         if(node->key <= key2 && node->key >= key1)
         {
             std::pair<uint64_t, std::string> cur_pair;
@@ -270,7 +274,8 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
         node= node->succ;
     }
 
-    //Find in ssTable
+    //在ssTable中寻找
+    //对于其中的每一个节点
     for(int i = 0 ; i < this->sslevel.size() ; i++)
     {
         for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
@@ -289,7 +294,6 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
                     cur_pair.second = "";
                     list.push_back(cur_pair);
                 }
-
             }
         }
     }
@@ -321,7 +325,6 @@ std::string to4Bits(unsigned int  value)
 {
     std::string binaryString;
     binaryString.reserve(32);
-
     for (int i = 0; i < 4; i++) {
         char byte = (value % 256);
         value >>= 3;

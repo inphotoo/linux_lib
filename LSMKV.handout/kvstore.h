@@ -6,9 +6,9 @@
 #include <vector>
 #include "utils.h"
 
+//跳表
 struct QuadlistNode
 {
-
     std::string entry;
     uint64_t key;
     QuadlistNode *prev ;
@@ -37,8 +37,10 @@ struct MemTable
         Quadlist()
         {
             header = new QuadlistNode(0);
+            header->entry = "@header";
             trailer = new QuadlistNode(922337203685477580);
             trailer->prev = header;
+            trailer->entry = "@trailer";
             header->succ = trailer;
             header->prev = header->above = header->below = NULL;
             trailer->above = trailer->below = trailer->succ = NULL;
@@ -58,7 +60,7 @@ struct MemTable
     };
 public:
     std::vector<Quadlist *> list;
-    double p = 0.5;
+    double p = 0.001;
     void put(uint64_t key, const std::string &val);
     void clear();
     std::string get(uint64_t key , bool &isFind );
@@ -72,7 +74,11 @@ public:
             list.push_back(new Quadlist) ;
         return list[0];
     };
-    Quadlist * last(){return list[list.size() - 1];};
+    Quadlist * last(){
+        if(list.size() == 0)
+            list.push_back(new Quadlist) ;
+        return list[list.size() - 1];
+    };
     MemTable(){};
 
 
