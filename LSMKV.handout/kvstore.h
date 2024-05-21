@@ -98,6 +98,8 @@ private:
     {
         uint64_t max;
         uint64_t min;
+        uint64_t timestamp;
+        int value;
         std::string filename;
         std::string str;
         ssNode(uint64_t max , uint64_t min):max(max),min(min){};
@@ -109,9 +111,19 @@ private:
         int level;
         std::vector<ssNode> ssNodes;
     };
+
+    struct sstable
+    {
+        uint64_t timestamp;
+        uint64_t key;
+        uint32_t valueLen;
+        uint64_t offset;
+    };
 public:
     MemTable memTable;
+
     std::vector<ssLevel> sslevel;
+
     void buildSSTable();
 
     void appendVLog();
@@ -130,6 +142,7 @@ public:
 
 	void scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, std::string>> &list) override;
 
+    void compactLevel(int level);
 
 	void gc(uint64_t chunk_size) override;
 
@@ -141,4 +154,12 @@ public:
 
     std::list<std::tuple<uint64_t, uint64_t  ,uint32_t>>
         findInSsTableByRange(std::string str, uint64_t max_key, uint64_t min_key);
+
+    ssNode writeSSTableToFile(const std::string &str , int level);
+
+    std::list<std::string> compaction(std::list<ssNode> ssNodeList);
+
+    void removeCompactedNodes(ssLevel &level, const std::list<ssNode> &selectedNodes);
+
+    std::list<ssNode> selectNodesForCompaction(int level);
 };
