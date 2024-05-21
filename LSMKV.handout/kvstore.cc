@@ -256,18 +256,18 @@ bool KVStore::del(uint64_t key)
  */
 void KVStore::reset()
 {
-    for(int i = 0 ; i <= this->sslevel.size() ; i++)
+    for(int i = 0 ; i < this->sslevel.size() ; i++)
     {
         std::string dirName = "./data/vlog/Level" + std::to_string(i);
         if(this->sslevel.size() == 0) return;
-        for(int j = 0 ; j <= this->sslevel[i].currentNum ; j++)
+        for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
         {
             std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
             utils::rmfile(fileName);
         }
         utils::rmdir(dirName);
     }
-    util::rmfile("./data/vlog/vLog")
+
 }
 
 /**
@@ -299,7 +299,7 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
     {
         for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
         {
-            if( this->sslevel[i].ssNodes[j].max  >= key1 &&
+            if(key1 <= this->sslevel[i].ssNodes[j].max &&
                 key2 >= this->sslevel[i].ssNodes[j].min)
             {
                 std::string filename = vlogDir + "/Level0/ssTable" + std::to_string(j + 1);
@@ -514,30 +514,7 @@ void KVStore::appendVLog()
 }
 void KVStore::SSTableCompaction()
 {
-    //将要被归并的nodes
-    std::list<ssNode> selectedNodes;
-    // Level 0 层中所有 SSTable 所覆盖的键的区间
-    uint64_t ss_min = UINT64_MAX;
-    uint64_t ss_max = 0;
-    for(auto ssNode:  sslevel[0].ssNodes)
-    {
-        if(ssNode.min < ss_min) ss_min = ssNode.min;
-        if(ssNode.max > ss_max) ss_max = ssNode.max;
-        selectedNodes.push_back(ssNode);
-    }
-
-    // 在level1层中找到所有有交集的文件
-
-    if(sslevel.size() <= 1) return ;//不level1
-    for(auto ssnode : sslevel[1].ssNodes)
-    {
-        //两个区间有交集
-        if(ssnode.max >= ss_min && ss_max > ssnode.min)
-        {
-            selectedNodes.push_back(ssnode);
-        }
-    }
-
+    
 }
 
 // 将 8 字节的字符串转换为 uint64_t
