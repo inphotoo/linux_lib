@@ -32,6 +32,8 @@ void MemTable::put(uint64_t key, const std::string &val)
                 p = p->below;
             //改变当前数值
             //向上全部修改
+            if(p->entry == "~DELETED~")
+                list[0]->size ++;
             while(p != nullptr)
                 {
                     p->entry = val;
@@ -47,11 +49,10 @@ void MemTable::put(uint64_t key, const std::string &val)
         }
     }// find the place of insert
 
-
     Quadlist *listlast = this->frist();
     //最底层先插入
     listlast->insertAfterAbove(key , val ,p , nullptr);
-
+    listlast->size ++;
     // 创建随机数
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -100,8 +101,8 @@ std::string MemTable::get(uint64_t key , bool &isFind )
         p = p->prev;
         if(p && p->key == key && p->entry != li->frist()->prev->entry)
         {
-            if(p->entry != "~DELETED~" )
-                isFind = true;
+//            if(p->entry != "~DELETED~" )
+            isFind = true;
             return p->entry;
         }
         else
@@ -133,11 +134,11 @@ KVStore::~KVStore()
 
 int MemTable::getMinKey()
 {
-    return this->last()->frist()->key;
+    return this->frist()->frist()->key;
 }
 int MemTable::getMaxKey()
 {
-    return this->last()->last()->key;
+    return this->frist()->last()->key;
 }
 /**
  * Insert/Update the key-value pair.
@@ -149,6 +150,7 @@ void KVStore::put(uint64_t key, const std::string &val)
     bool isFind = false;
     std::string v = memTable.get(key , isFind);
 
+    std::cerr << memTable.getSize();
     //如果最底层那一层
     if(memTable.getSize() < 408)
     {
@@ -172,7 +174,7 @@ std::string KVStore::get(uint64_t key)
     //Frist , we get data from memTable
     bool isFind = false;
     std::string v = memTable.get(key , isFind);
-
+    if(v == "~DELETED~") return"";
     if(isFind)
         return v;
     else
@@ -187,7 +189,11 @@ std::string KVStore::get(uint64_t key)
 //                    std::ifstream file(filename);
 //                    std::cout << "find in ssTable";
                     bool isExist = false;
-                    auto [dataOffset, valueLen] = findInssTable(filename ,key , &isExist);
+                    std::ifstream file(filename, std::ios::binary);
+                    std::stringstream buffer;
+                    buffer << file.rdbuf();
+                    std::string str = buffer.str();
+                    auto [dataOffset, valueLen] = findInssTable(str ,key , &isExist);
                     if(isExist)
                     {
                         return KVStore::readFromVLog(dataOffset , valueLen);
@@ -208,26 +214,36 @@ bool KVStore::del(uint64_t key)
     bool isFind = false;
     // 首先，在memTable中寻找
     std::string v = memTable.get(key , isFind);
-
     // 然后，在ssTable中寻找
+    if(v == "~DELETED~") return false;
     if(isFind)
 	{
         memTable.put(key , "~DELETED~");
+        memTable.list[0]->size --;
         return true;
     }
     else
         for(int i = 0 ; i < this->sslevel.size() ; i++)
         {
+            std::string dirName = "./data/vlog/Level" + std::to_string(i);
             for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
             {
                 if(key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min)
                 {
-                    std::string filename = this->vlogDir + std::to_string(i)+ "/ssTable/" + std::to_string(j);
-                    std::ifstream file(filename);
+                    std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
 //                    std::cout << "delt in ssTable";
                     bool isExist = true;
+                    std::ifstream file(fileName, std::ios::binary);
+                    std::stringstream buffer;
+                    buffer << file.rdbuf();
+                    std::string str = buffer.str();
+                    auto [dataOffset, valueLen] = findInssTable(str ,key , &isExist);
                     if(isExist)
+                    {
+                        memTable.put(key , "~DELETED~");
                         return true;
+                    }
+                    return false;
                 }
             }
         }
@@ -282,20 +298,25 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
     {
         for(int j = 0 ; j < this->sslevel[i].currentNum ; j++)
         {
-            if(key1 <= this->sslevel[i].ssNodes[j].max && key1 >= this->sslevel[i].ssNodes[j].min ||
-                key2 <= this->sslevel[i].ssNodes[j].max && key2 >= this->sslevel[i].ssNodes[j].min)
+            if(key1 <= this->sslevel[i].ssNodes[j].max &&
+                key2 >= this->sslevel[i].ssNodes[j].min)
             {
-                std::string filename = this->vlogDir + std::to_string(i)+ "/ssTable/" + std::to_string(j);
+                std::string filename = vlogDir + "/Level0/ssTable" + std::to_string(j + 1);
 //                std::ifstream file(filename);
                 // std::cout << "data may in ssTable";
                 // 后续补
-                bool isExist = false;
-                findInssTable(filename );
-                if(isExist)
+                std::ifstream file(filename, std::ios::binary);
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                std::string str = buffer.str();
+                auto list_find= findInSsTableByRange(str , key2 , key1);
+                for(auto item : list_find)
                 {
+                    auto [key ,dataOffset,vLen] = item;
+                    std::string entry = readFromVLog(dataOffset , vLen);
                     std::pair<uint64_t, std::string> cur_pair;
-                    cur_pair.first = 0 ;
-                    cur_pair.second = "";
+                    cur_pair.first = key ;
+                    cur_pair.second = entry;
                     list.push_back(cur_pair);
                 }
             }
@@ -403,18 +424,25 @@ void KVStore::buildSSTable()
 
     uint64_t offset = Head ;
     auto cur_node = this->memTable.list[0]->frist();
-    while( ssTable.length() + 20 <= 16 * 1024 && cur_node)
+//    while( ssTable.length() + 20 <= 16 * 1024 && cur_node)
+    while(cur_node->succ != nullptr)
     {
         //开始位置：当前头位置
-        unsigned int vlen = cur_node->entry.size();
-        ssTable += to8Bytes(current_key) + to8Bytes(Head) + to4Bytes(vlen);
+        unsigned int vlen = 0;
+        if(cur_node->entry == "~DELETED~")
+        {
+            cur_node = cur_node->succ;
+            continue;
+        }
+        vlen = cur_node->entry.size();
+        ssTable += to8Bytes(cur_node->key) + to8Bytes(Head) + to4Bytes(vlen);
         // 头位置向后偏移
         Head +=  1 + 2 + 8 + 4 + vlen ; //Magic + checksum + key + entryLen + entry;
         current_key++;
         cur_node = cur_node->succ;
     }
-//    std::cerr << ssTable.length() << std::endl;
-//    std::cout << current_key;
+    std::cerr << ssTable.length() << std::endl;
+    std::cout << current_key;
 
     //把文件添加到Level0中,并设置每个文件ssTable范围
     std::string fileName ;
@@ -452,6 +480,12 @@ void KVStore::appendVLog()
     auto node = this->memTable.list[0]->frist();
     while(node->succ != nullptr)
     {
+        //如果是被删除的，就不用写到vlog里面
+        if(node->entry == "~DELETED~")
+        {
+            node = node->succ;
+            continue;
+        }
         //data: 校验和数据 key , vlen , entry合并而成。
         std::string data = to8Bytes(node->key) + to4Bytes(node->entry.length()) + node->entry;
         std::vector<unsigned char> data_vector(data.begin() , data.end());
@@ -512,48 +546,62 @@ bool checkBloomFilter(const std::vector<unsigned int>& vec, uint64_t key) {
     return true;
 }
 
-std::tuple<uint64_t, uint32_t> KVStore::findInssTable(std::string filename, uint64_t key ,  bool *isExist) {
-    std::ifstream file(filename, std::ios::binary);
-    if(!file.is_open())
-    {
-        return std::make_tuple(0,0);
+std::tuple<uint64_t, uint32_t> KVStore::findInssTable(std::string str, uint64_t key ,  bool *isExist) {
+    uint64_t timestamp = from8Bytes(str.substr(0, 8));
+    uint64_t num_of_key = from8Bytes(str.substr(8, 8));
+    uint64_t min_key = from8Bytes(str.substr(16, 8));
+    uint64_t max_key = from8Bytes(str.substr(24, 8));
+    // 解析布隆过滤器
+    std::vector<uint32_t> bloomFilter(2048);
+    size_t offset = 32;
+    for (size_t i = 0; i < 2048; ++i) {
+        bloomFilter[i] = from4Bytes(str.substr(offset, 4));
+        offset += 4;
     }
-    else
-    {
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string str = buffer.str();
-        uint64_t timestamp = from8Bytes(str.substr(0, 8));
-        uint64_t num_of_key = from8Bytes(str.substr(8, 8));
-        uint64_t min_key = from8Bytes(str.substr(16, 8));
-        uint64_t max_key = from8Bytes(str.substr(24, 8));
-        // 解析布隆过滤器
-        std::vector<uint32_t> bloomFilter(2048);
-        size_t offset = 32;
-        for (size_t i = 0; i < 2048; ++i) {
-            bloomFilter[i] = from4Bytes(str.substr(offset, 4));
+    *isExist = checkBloomFilter(bloomFilter, key);
+    if (*isExist) {
+        for (uint64_t i = 0; i < num_of_key; ++i) {
+            uint64_t ss_key = from8Bytes(str.substr(offset, 8));
+            offset += 8;
+            uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
+            offset += 8;
+            uint32_t valueLen = from4Bytes(str.substr(offset, 4));
             offset += 4;
+            if (key == ss_key)
+                return std::make_tuple(dataOffset, valueLen);
         }
-        *isExist = checkBloomFilter(bloomFilter , key);
-        if(*isExist)
-        {
-            for (uint64_t i = 0; i < num_of_key; ++i) {
-                uint64_t ss_key = from8Bytes(str.substr(offset, 8));
-                offset += 8;
-                uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
-                offset += 8;
-                uint32_t valueLen = from4Bytes(str.substr(offset, 4));
-                offset += 4;
-                if(key == ss_key)
-                    return std::make_tuple(dataOffset , valueLen);
-            }
-            *isExist = false;
-            return std::make_tuple(0,0);
-        }
-        return std::make_tuple(0,0);
+        *isExist = false;
+        return std::make_tuple(0, 0);
     }
 }
 
+std::list<std::tuple<uint64_t  ,uint64_t, uint32_t>> KVStore::findInSsTableByRange(std::string str , uint64_t max_key , uint64_t min_key)
+{
+    std::list<std::tuple<uint64_t,uint64_t  , uint32_t>> list;
+    uint64_t timestamp = from8Bytes(str.substr(0, 8));
+    uint64_t num_of_key = from8Bytes(str.substr(8, 8));
+//    uint64_t min_key = from8Bytes(str.substr(16, 8));
+//    uint64_t max_key = from8Bytes(str.substr(24, 8));
+    // 解析布隆过滤器
+    std::vector<uint32_t> bloomFilter(2048);
+    size_t offset = 32;
+    for (size_t i = 0; i < 2048; ++i) {
+        bloomFilter[i] = from4Bytes(str.substr(offset, 4));
+        offset += 4;
+    }
+    for (uint64_t i = 0; i < num_of_key; ++i) {
+        uint64_t ss_key = from8Bytes(str.substr(offset, 8));
+        offset += 8;
+        uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
+        offset += 8;
+        uint32_t valueLen = from4Bytes(str.substr(offset, 4));
+        offset += 4;
+        if ( ss_key <= max_key && ss_key >= min_key)
+            list.push_back(std::make_tuple(ss_key,dataOffset , valueLen));
+    }
+    return list;
+
+}
 std::string KVStore::readFromVLog(uint64_t dataOffset, uint32_t valueLen) {
     std::string vLogName = vlogDir + "/vLog";
     std::ifstream file(vLogName, std::ios::binary);

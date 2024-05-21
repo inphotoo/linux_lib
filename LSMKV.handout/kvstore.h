@@ -50,7 +50,6 @@ struct MemTable
         QuadlistNode *last(){return trailer->prev ;}
         bool isEmpty(){if(size <= 0) return true; }
         QuadlistNode *insertAfterAbove(uint64_t k , std::string e , QuadlistNode *p , QuadlistNode * b){
-            size ++;
             return p->insertAsSuccAbove(k , e, b);
         };
         QuadlistNode *header;
@@ -134,7 +133,10 @@ public:
 
     void SSTableCompaction() ;
 
-    std::tuple<uint64_t, uint32_t> findInssTable(std::string filename,uint64_t key, bool *isExist);
+    std::tuple<uint64_t, uint32_t> findInssTable(std::string str,uint64_t key, bool *isExist);
 
     std::string readFromVLog(uint64_t dataOffset, uint32_t valueLen);
+
+    std::list<std::tuple<uint64_t, uint64_t  ,uint32_t>>
+        findInSsTableByRange(std::string str, uint64_t max_key, uint64_t min_key);
 };
