@@ -98,6 +98,8 @@ private:
     {
         uint64_t max;
         uint64_t min;
+        std::string filename;
+        std::string str;
         ssNode(uint64_t max , uint64_t min):max(max),min(min){};
     };
 
