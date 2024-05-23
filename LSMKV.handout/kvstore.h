@@ -3,6 +3,7 @@
 #include "kvstore_api.h"
 #include "MurmurHash3.h"
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "utils.h"
 
@@ -59,7 +60,7 @@ struct MemTable
     };
 public:
     std::vector<Quadlist *> list;
-    double p = 0.001;
+    double p = 0.1;
     void put(uint64_t key, const std::string &val);
     void clear();
     std::string get(uint64_t key , bool &isFind );
@@ -144,16 +145,18 @@ public:
 
     void compactLevel(int level);
 
+    void selfCompaction(int level);
+
 	void gc(uint64_t chunk_size) override;
 
     void SSTableCompaction() ;
 
-    std::tuple<uint64_t, uint32_t> findInssTable(std::string str,uint64_t key, bool *isExist);
+    std::tuple<uint64_t, uint32_t> findInssTable(const std::string &str,uint64_t key, bool *isExist);
 
     std::string readFromVLog(uint64_t dataOffset, uint32_t valueLen);
 
     std::list<std::tuple<uint64_t, uint64_t  ,uint32_t>>
-        findInSsTableByRange(std::string str, uint64_t max_key, uint64_t min_key);
+        findInSsTableByRange(const std::string& str, uint64_t max_key, uint64_t min_key);
 
     ssNode writeSSTableToFile(const std::string &str , int level);
 

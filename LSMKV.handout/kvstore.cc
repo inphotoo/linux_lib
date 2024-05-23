@@ -124,7 +124,7 @@ KVStore::KVStore(const std::string &dir, const std::string &vlog) : KVStoreAPI(d
 {
     this->dataDir = dir;
     this->vlogDir = vlog;
-    utils::_mkdir("./data/vlog");
+    utils::_mkdir("./data");
 }
 
 KVStore::~KVStore()
@@ -156,7 +156,6 @@ void KVStore::put(uint64_t key, const std::string &val)
         memTable.put(key , val);
         return;
     }
-
     //if out of range ,we build ssTable frist;
     buildSSTable();
 
@@ -213,43 +212,37 @@ bool KVStore::del(uint64_t key)
 {
     bool isFind = false;
     // 首先，在memTable中寻找
-    std::string v = memTable.get(key , isFind);
-    // 然后，在ssTable中寻找
-    if(v == "~DELETED~") return false;
-    if(isFind)
-    {
-        memTable.put(key , "~DELETED~");
-        //找到了数目不变
-        //memTable.list[0]->size --;
-        return true;
+    std::string v = memTable.get(key, isFind);
+    // 如果在memTable中找到并且不是被删除标记
+    if (isFind) {
+        if (v != "~DELETED~") {
+            memTable.put(key, "~DELETED~");
+            return true;
+        }
+        return false; // 已经是删除标记
     }
-    else
-        for(int i = 0 ; i < this->sslevel.size() ; i++)
-        {
-            std::string dirName = "./data/vlog/Level" + std::to_string(i);
-            for(int j = 0 ; j < this->sslevel[i].ssNodes.size() ; j++)
-            {
-                if(key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min)
-                {
-                    std::string fileName = this->sslevel[i].ssNodes[j].filename;
-//                    std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
-//                    std::cout << "delt in ssTable";
-                    bool isExist = true;
-                    std::ifstream file(fileName, std::ios::binary);
-                    std::stringstream buffer;
-                    buffer << file.rdbuf();
-                    std::string str = buffer.str();
-                    auto [dataOffset, valueLen] = findInssTable(str ,key , &isExist);
-                    //如果找到，就插入一条被删除的记录
-                    if(isExist)
-                    {
-                        memTable.put(key , "~DELETED~");
-                        return true;
-                    }
-                    return false;
+
+    // 然后，在ssTable中寻找
+    for (int i = 0; i < this->sslevel.size(); i++) {
+        for (int j = 0; j < this->sslevel[i].ssNodes.size(); j++) {
+            if (key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min) {
+                std::string fileName = this->sslevel[i].ssNodes[j].filename;
+                bool isExist = false;
+                std::ifstream file(fileName, std::ios::binary);
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                std::string str = buffer.str();
+                auto [dataOffset, valueLen] = findInssTable(str, key, &isExist);
+                // 如果找到，就插入一条被删除的记录
+                if (isExist) {
+                    memTable.put(key, "~DELETED~");
+                    return true;
                 }
             }
         }
+    }
+
+    // 在所有层次中都未找到该key
     return false;
 }
 
@@ -261,11 +254,11 @@ void KVStore::reset()
 {
     for(int i = 0 ; i < this->sslevel.size() ; i++)
     {
-        std::string dirName = "./data/vlog/Level" + std::to_string(i);
+        std::string dirName = this->dataDir + "/Level" + std::to_string(i);
         if(this->sslevel.size() == 0) return;
         for(int j = 0 ; j < this->sslevel[i].ssNodes.size() ; j++)
         {
-            std::string fileName =  dirName + "/ssTable" + std::to_string(j + 1) ;
+            std::string fileName =  this->sslevel[i].ssNodes[j].filename;
             utils::rmfile(fileName);
         }
         utils::rmdir(dirName);
@@ -274,7 +267,7 @@ void KVStore::reset()
     this->ssTable.clear();
     this->Head = 0;
     this->memTable.list.clear();
-    utils::rmfile("./data/vlog/vLog");
+    utils::rmfile("./data/vlog");
 }
 
 /**
@@ -335,14 +328,117 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
         return a.first < b.first;
     });
 }
+// 将 8 字节的字符串转换为 uint64_t
+uint64_t from8Bytes(const std::string& str) {
+    if (str.size() < 8) throw std::runtime_error("Insufficient data for uint64_t conversion");
+    uint64_t value;
+    std::memcpy(&value, str.data(), 8);
+    return value;
+}
 
+// 将 4 字节的字符串转换为 uint32_t
+uint32_t from4Bytes(const std::string& str) {
+    if (str.size() < 4) throw std::runtime_error("Insufficient data for uint32_t conversion");
+    uint32_t value;
+    std::memcpy(&value, str.data(), 4);
+    return value;
+}
 /**
  * This reclaims space from vLog by moving valid value and discarding invalid value.
  * chunk_size is the size in byte you should AT LEAST recycle.
  */
-void KVStore::gc(uint64_t chunk_size)
-{
+void KVStore::gc(uint64_t chunk_size) {
+    std::string vLogName = vlogDir;
+    std::ifstream file(vLogName, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open the file: " << vLogName << std::endl;
+        return;
+    }
+
+    file.seekg(Tail, std::ios::beg);
+
+    uint64_t totalProcessedSize = 0;
+    std::vector<char> leftoverBuffer;  // 缓存上次读取不足的数据
+
+    uint64_t lastLen = 0;
+    while (totalProcessedSize < chunk_size) {
+        // 批量读取数据，减少文件 I/O 操作次数
+        std::vector<char> buffer(chunk_size);
+        uint64_t readSize = std::max(lastLen , chunk_size);
+        file.read(buffer.data(), readSize);
+        size_t bufferSize = file.gcount();
+        if (bufferSize == 0) break;  // 已经到达文件末尾
+
+        if (!leftoverBuffer.empty()) {
+            // 将缓存的数据与新读取的数据合并
+            buffer.insert(buffer.begin(), leftoverBuffer.begin(), leftoverBuffer.end());
+            bufferSize += leftoverBuffer.size();
+            leftoverBuffer.clear();
+        }
+
+        const char* ptr = buffer.data();
+        size_t processedSize = 0;
+
+        while (processedSize < bufferSize) {
+            // 读取头部：Magic (1字节) + 校验和 (2字节) + key (8字节) + vlen (4字)
+            const int headerSize = 1 + 2 + 8 + 4;
+            if (bufferSize - processedSize < headerSize) {
+                leftoverBuffer.insert(leftoverBuffer.end(), ptr, ptr + (bufferSize - processedSize));
+                break; // 剩余数据不足以读取头部，缓存并跳出循环
+            }
+
+            uint64_t key = from8Bytes(std::string(ptr + 3, 8));
+            uint32_t valueLen = from4Bytes(std::string(ptr + 11, 4));
+
+            if (bufferSize - processedSize < headerSize + valueLen) {
+                leftoverBuffer.insert(leftoverBuffer.end(), ptr, ptr + (bufferSize - processedSize));
+                break; // 剩余数据不足以读取完整条目，缓存并跳出循环
+            }
+
+            std::string valueStr(ptr + headerSize, valueLen);
+
+            // 验证当前条目是否是 LSM Tree 中的最新值
+            bool isLatest = false;
+            bool isMemFind = false;
+            std::string memValue = memTable.get(key, isMemFind);
+
+            if (isMemFind && memValue == valueStr) {
+                isLatest = true;
+            } else if (!isMemFind) {
+                std::string storeValue = get(key);
+                if (storeValue == valueStr) {
+                    isLatest = true;
+                }
+            }
+
+            if (isLatest) {
+                // 如果是最新值，重新插入到 MemTable 中
+                memTable.put(key, valueStr);
+            }
+
+            processedSize += headerSize + valueLen;
+            totalProcessedSize += headerSize + valueLen;
+            ptr += headerSize + valueLen;
+            Tail += headerSize + valueLen; // 更新tail的位置
+        }
+
+        // 如果到达文件末尾
+        if (file.eof()) {
+            break;
+        }
+    }
+
+    file.close();
+
+    // 如果 MemTable 中有任何条目，写入到 SSTable 中
+    if (memTable.getSize() > 0) {
+        buildSSTable();
+    }
+
+    // 对处理过的 vLog 文件区域打洞
+    utils::de_alloc_file(vLogName, 0, Tail);
 }
+
 
 std::string to8Bytes(uint64_t value) {
     std::string binaryString;
@@ -467,12 +563,12 @@ void KVStore::buildSSTable()
         s0.level = 0;
         sslevel.push_back(s0);
         //std::cout <<
-        utils::_mkdir( vlogDir + "/Level0" );
+        utils::_mkdir( dataDir + "/Level0" );
     }
     //ssLevel里面缓存了所有的ssTable
     sslevel[0].currentNum ++;
     ssNode s(max_key , min_key);
-    fileName = vlogDir + "/Level0/ssTable" + std::to_string(sslevel[0].currentNum + 1);
+    fileName = dataDir + "/Level0/ssTable" + std::to_string(sslevel[0].currentNum + 1);
     s.filename = fileName;
     s.str = ssTable;
     s.value = sslevel[0].ssNodes.size();
@@ -486,7 +582,7 @@ void KVStore::buildSSTable()
     // 如果0层大于3个，就要开始合并
     if(sslevel[0].ssNodes.size() >= 3)
     {
-//        sslevel;
+        sslevel;
         //compaction
         SSTableCompaction();
     }
@@ -494,59 +590,56 @@ void KVStore::buildSSTable()
     this->memTable.clear();
 }
 
-void KVStore::appendVLog()
-{
-    std::string append_vlog ;
+void KVStore::appendVLog() {
+    std::ostringstream append_vlog;
     auto node = this->memTable.list[0]->frist();
-    while(node->succ != nullptr)
-    {
-        //如果是被删除的，就不用写到vlog里面(x)
-        //二编，怎么可能不写啊，不然表里的记录怎么删除啊(哭）
-//        if(node->entry == "~DELETED~")
-//        {
-//            node = node->succ;
-//            continue;
-//        }
-        //data: 校验和数据 key , vlen , entry合并而成。
+
+    while (node->succ != nullptr) {
+        // 构建 vLog 条目
         std::string value;
         uint32_t vlen;
-        if(node->entry == "~DELETED~")
-        {
+        if (node->entry == "~DELETED~") {
             value = "";
             vlen = 0;
-        }
-        else
-        {
+        } else {
             value = node->entry;
             vlen = node->entry.length();
         }
-        std::string data = to8Bytes(node->key) + to4Bytes(vlen) + value;
-        std::vector<unsigned char> data_vector(data.begin() , data.end());
-        //vlog = Magic + checksum + key + vlen + value
-        std::string vLog = toByte(INT8_MAX) + to2Bytes(utils::crc16(data_vector)) +
-                           to8Bytes(node->key) + to4Bytes(vlen) + value;
-        node = node->succ;
-        append_vlog += vLog;
-//        std::cerr << append_vlog.size();
-    }
-    std::string vLogName = vlogDir + "/vLog";
-    std::ofstream file(vLogName , std::ios::app);
-    if(!file.is_open())
-    {
-        std::cout << "Failed to open the file: " << vLogName << std::endl;
-    }
-    else
-    {
-        //std::cerr << append_vlog.size();
-        file << append_vlog;
-    }
-    file.flush();
-    file.close();
 
+        std::string data = to8Bytes(node->key) + to4Bytes(vlen) + value;
+        std::vector<unsigned char> data_vector(data.begin(), data.end());
+
+        // vLog = Magic + checksum + key + vlen + value
+        append_vlog << toByte(INT8_MAX)
+                    << to2Bytes(utils::crc16(data_vector))
+                    << to8Bytes(node->key)
+                    << to4Bytes(vlen)
+                    << value;
+
+        node = node->succ;
+    }
+
+    std::string vLogName = vlogDir;
+    std::ofstream file(vLogName, std::ios::app | std::ios::binary);
+
+    if (!file.is_open()) {
+        std::cerr << "Failed to open the file: " << vLogName << std::endl;
+        return;
+    }
+
+    std::string vlogData = append_vlog.str();
+    file.write(vlogData.data(), vlogData.size());
+
+    if (!file) {
+        std::cerr << "Failed to write to the file: " << vLogName << std::endl;
+    }
+
+    file.close();
 }
 void KVStore::SSTableCompaction() {
     // 将要被归并的nodes
     std::list<ssNode> selectedNodes;
+    std::unordered_set<std::string> selectedFilenames;
     // Level 0 层中所有 SSTable 所覆盖的键的区间
     uint64_t ss_min = UINT64_MAX;
     uint64_t ss_max = 0;
@@ -556,14 +649,32 @@ void KVStore::SSTableCompaction() {
         selectedNodes.push_back(ssNode);
     }
 
-    // 在level1层中找到所有有交集的文件
+    for (const auto& node : selectedNodes) {
+        selectedFilenames.insert(node.filename);
+    }
+
     if (sslevel.size() > 1)  // 不存在level1
-        for (auto ssnode : sslevel[1].ssNodes) {
-            // 两个区间有交集
-            if (ssnode.max >= ss_min && ss_max > ssnode.min) {
-                selectedNodes.push_back(ssnode);
+        // 在下一层中找到所有有交集的文件
+        for (const auto& node : sslevel[ 1].ssNodes) {
+            for (const auto& selectedNode : selectedNodes) {
+                if (node.min <= selectedNode.max && node.max >= selectedNode.min) {
+                    if (selectedFilenames.find(node.filename) == selectedFilenames.end()) {
+                        selectedNodes.push_back(node);
+                        selectedFilenames.insert(node.filename);
+                    }
+                    break;
+                }
             }
         }
+
+//    // 在level1层中找到所有有交集的文件
+//    if (sslevel.size() > 1)  // 不存在level1
+//        for (auto ssnode : sslevel[1].ssNodes) {
+//            // 两个区间有交集
+//            if (ssnode.max >= ss_min && ss_max > ssnode.min) {
+//                selectedNodes.push_back(ssnode);
+//            }
+//        }
 
     // 合并选中的SSTables
     auto strLists = compaction(selectedNodes);
@@ -587,33 +698,101 @@ void KVStore::SSTableCompaction() {
     sslevel[0].ssNodes.clear();
 
 }
+//自我检查，这一层如果有范围重叠的，则合并
+void KVStore::selfCompaction(int level)
+{
+    // 将要被归并的nodes
+    std::list<ssNode> selectedNodes;
+    std::vector<bool> merged(sslevel[level].ssNodes.size(), false);
+
+    //首先检查范围有无重合
+    for (size_t i = 0; i < sslevel[level].ssNodes.size(); ++i) {
+        if (merged[i]) continue;
+
+        ssNode& nodeA = sslevel[level].ssNodes[i];
+        for (size_t j = i + 1; j < sslevel[level].ssNodes.size(); ++j) {
+            if (merged[j]) continue;
+
+            ssNode& nodeB = sslevel[level].ssNodes[j];
+            // 检查两个区间是否有重叠
+            if (nodeA.min <= nodeB.max && nodeA.max >= nodeB.min) {
+                selectedNodes.push_back(nodeA);
+                selectedNodes.push_back(nodeB);
+                merged[i] = true;
+                merged[j] = true;
+                break;
+            }
+        }
+        if (!merged[i]) {
+            selectedNodes.push_back(nodeA);
+            merged[i] = true;
+        }
+    }
+    //去重
+    selectedNodes.sort([](const ssNode& a, const ssNode& b) { return a.filename < b.filename; });
+    selectedNodes.unique([](const ssNode& a, const ssNode& b) { return a.filename == b.filename; });
+
+    auto strLists = compaction(selectedNodes);
+
+    // 将合并结果写入本层
+    for (const auto &str : strLists) {
+        ssNode newNode = writeSSTableToFile(str , level );
+        sslevel[level].ssNodes.push_back(newNode);
+    }
+
+    // 从当前层移除已合并的文件
+    removeCompactedNodes(sslevel[level], selectedNodes);
+}
 
 void KVStore::compactLevel(int level) {
     if (level >= sslevel.size() - 1) {
-        utils::mkdir(this->vlogDir + "/Level" + std::to_string(level + 1));
+        utils::mkdir(this->dataDir + "/Level" + std::to_string(level + 1));
         ssLevel ss;
         ss.currentNum = 0;
-        ss.level = level;
+        ss.level = level + 1;
         sslevel.push_back(ss);
     }
 
     // 找出需要合并的文件，假设我们需要优先选择时间戳最小的若干个文件
     std::list<ssNode> selectedNodes = selectNodesForCompaction(level);
+    std::unordered_set<std::string> selectedFilenames;
+
+    // 将选中的节点文件名加入集合
+    for (const auto& node : selectedNodes) {
+        selectedFilenames.insert(node.filename);
+    }
+
+    if (sslevel.size() > level + 1)  // 不存在level1
+    // 在下一层中找到所有有交集的文件
+        for (const auto& node : sslevel[level + 1].ssNodes) {
+            for (const auto& selectedNode : selectedNodes) {
+                if (node.min <= selectedNode.max && node.max >= selectedNode.min) {
+                    if (selectedFilenames.find(node.filename) == selectedFilenames.end()) {
+                        selectedNodes.push_back(node);
+                        selectedFilenames.insert(node.filename);
+                    }
+                    break;
+                }
+            }
+        }
 
     // 合并选中的SSTables
     auto strLists = compaction(selectedNodes);
 
     // 将合并结果写入下一层
     for (const auto &str : strLists) {
-        ssNode newNode = writeSSTableToFile(str , level + 1);
+        ssNode newNode = writeSSTableToFile(str, level + 1);
         sslevel[level + 1].ssNodes.push_back(newNode);
     }
 
     // 从当前层移除已合并的文件
     removeCompactedNodes(sslevel[level], selectedNodes);
 
+    // 对下一层进行自我合并
+    selfCompaction(level + 1);
+
     // 检查下一层文件数量是否超出限制
-    if (sslevel[level + 1].ssNodes.size() > pow(2 , level + 1)) {
+    if (sslevel[level + 1].ssNodes.size() > static_cast<size_t>(pow(2, level + 1))) {
         compactLevel(level + 1);
     }
 }
@@ -630,21 +809,7 @@ void KVStore::removeCompactedNodes(ssLevel &level, const std::list<ssNode> &sele
         utils::rmfile(node.filename);
     }
 }
-// 将 8 字节的字符串转换为 uint64_t
-uint64_t from8Bytes(const std::string& str) {
-    if (str.size() < 8) throw std::runtime_error("Insufficient data for uint64_t conversion");
-    uint64_t value;
-    std::memcpy(&value, str.data(), 8);
-    return value;
-}
 
-// 将 4 字节的字符串转换为 uint32_t
-uint32_t from4Bytes(const std::string& str) {
-    if (str.size() < 4) throw std::runtime_error("Insufficient data for uint32_t conversion");
-    uint32_t value;
-    std::memcpy(&value, str.data(), 4);
-    return value;
-}
 
 bool checkBloomFilter(const std::vector<unsigned int>& vec, uint64_t key) {
     unsigned int hash[4] = {0};
@@ -660,86 +825,162 @@ bool checkBloomFilter(const std::vector<unsigned int>& vec, uint64_t key) {
     return true;
 }
 
-std::tuple<uint64_t, uint32_t> KVStore::findInssTable(std::string str, uint64_t key ,  bool *isExist) {
-    uint64_t timestamp = from8Bytes(str.substr(0, 8));
-    uint64_t num_of_key = from8Bytes(str.substr(8, 8));
-    uint64_t min_key = from8Bytes(str.substr(16, 8));
-    uint64_t max_key = from8Bytes(str.substr(24, 8));
+uint64_t from8Bytes2(const char* data) {
+    uint64_t value;
+    std::memcpy(&value, data, 8);
+    return value;
+}
+
+uint32_t from4Bytes2(const char* data) {
+    uint32_t value;
+    std::memcpy(&value, data, 4);
+    return value;
+}
+
+std::tuple<uint64_t, uint32_t> KVStore::findInssTable(const std::string& str, uint64_t key, bool *isExist) {
+    const char* ptr = str.data();
+
+    // 读取前32字节的元数据
+    uint64_t timestamp = from8Bytes2(ptr);
+    ptr += 8;
+    uint64_t num_of_key = from8Bytes2(ptr);
+    ptr += 8;
+    uint64_t min_key = from8Bytes2(ptr);
+    ptr += 8;
+    uint64_t max_key = from8Bytes2(ptr);
+    ptr += 8;
+
     // 解析布隆过滤器
     std::vector<uint32_t> bloomFilter(2048);
-    size_t offset = 32;
     for (size_t i = 0; i < 2048; ++i) {
-        bloomFilter[i] = from4Bytes(str.substr(offset, 4));
-        offset += 4;
+        bloomFilter[i] = from4Bytes2(ptr);
+        ptr += 4;
     }
+
+    // 检查布隆过滤器
     *isExist = checkBloomFilter(bloomFilter, key);
-    if (*isExist) {
-        for (uint64_t i = 0; i < num_of_key; ++i) {
-            uint64_t ss_key = from8Bytes(str.substr(offset, 8));
-            offset += 8;
-            uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
-            offset += 8;
-            uint32_t valueLen = from4Bytes(str.substr(offset, 4));
-            offset += 4;
-            if (key == ss_key)
-                return std::make_tuple(dataOffset, valueLen);
-        }
-        *isExist = false;
+    if (!*isExist) {
         return std::make_tuple(0, 0);
     }
+
+
+    //二分查找
+    // 使用二分查找在键区间中搜索
+    uint64_t left = 0;
+    uint64_t right = num_of_key - 1;
+
+    while (left <= right) {
+        uint64_t mid = left + (right - left) / 2;
+        const char *cur_ptr = ptr + 20 * mid;
+        uint64_t ss_key = from8Bytes2(cur_ptr);
+
+        if (key == ss_key) {
+            uint64_t dataOffset = from8Bytes2(cur_ptr + 8);
+            uint32_t valueLen = from4Bytes2(cur_ptr + 16);
+            return std::make_tuple(dataOffset, valueLen);
+        }
+
+        if (ss_key < key) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    *isExist = false;
+    return std::make_tuple(0, 0);
 }
 
-std::list<std::tuple<uint64_t  ,uint64_t, uint32_t>> KVStore::findInSsTableByRange(std::string str , uint64_t max_key , uint64_t min_key)
-{
-    std::list<std::tuple<uint64_t,uint64_t  , uint32_t>> list;
-    uint64_t timestamp = from8Bytes(str.substr(0, 8));
-    uint64_t num_of_key = from8Bytes(str.substr(8, 8));
-//    uint64_t min_key = from8Bytes(str.substr(16, 8));
-//    uint64_t max_key = from8Bytes(str.substr(24, 8));
+std::list<std::tuple<uint64_t, uint64_t, uint32_t>> KVStore::findInSsTableByRange(const std::string& str, uint64_t max_key, uint64_t min_key) {
+    std::list<std::tuple<uint64_t, uint64_t, uint32_t>> list;
+    const char* ptr = str.data();
+
+    uint64_t timestamp = from8Bytes2(ptr);
+    ptr += 8;
+    uint64_t num_of_key = from8Bytes2(ptr);
+    ptr += 24;
+//    ptr += 8;
+//    ptr += 8; // skip min_key in metadata
+//    ptr += 8; // skip max_key in metadata
+
     // 解析布隆过滤器
     std::vector<uint32_t> bloomFilter(2048);
-    size_t offset = 32;
     for (size_t i = 0; i < 2048; ++i) {
-        bloomFilter[i] = from4Bytes(str.substr(offset, 4));
-        offset += 4;
+        bloomFilter[i] = from4Bytes2(ptr);
+        ptr += 4;
     }
-    for (uint64_t i = 0; i < num_of_key; ++i) {
-        uint64_t ss_key = from8Bytes(str.substr(offset, 8));
-        offset += 8;
-        uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
-        offset += 8;
-        uint32_t valueLen = from4Bytes(str.substr(offset, 4));
-        offset += 4;
-        if ( ss_key <= max_key && ss_key >= min_key && valueLen != 0)
-            list.push_back(std::make_tuple(ss_key,dataOffset , valueLen));
-    }
-    return list;
 
+    // 使用二分查找找到范围的起始位置
+    uint64_t left = 0;
+    uint64_t right = num_of_key;
+    uint64_t start = num_of_key;
+    while (left < right) {
+        uint64_t mid = left + (right - left) / 2;
+        const char *cur_ptr = ptr + 20 * mid;
+        uint64_t ss_key = from8Bytes2(cur_ptr);
+
+        if (ss_key >= min_key) {
+            start = mid;
+            right = mid;
+        } else {
+            left = mid + 1;
+        }
+    }
+
+    // 使用二分查找找到范围的结束位置
+    left = 0;
+    right = num_of_key - 1;
+    uint64_t end = num_of_key;
+    while (left <= right) {
+        uint64_t mid = left + (right - left) / 2;
+        const char *cur_ptr = ptr + 20 * mid;
+        uint64_t ss_key = from8Bytes2(cur_ptr);
+
+        if (ss_key <= max_key) {
+            end = mid;
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+
+    // 遍历找到的范围内的键值对
+    for (uint64_t i = start; i <= end && i < num_of_key; ++i) {
+        const char *cur_ptr = ptr + 20 * i;
+        uint64_t ss_key = from8Bytes2(cur_ptr);
+        uint64_t dataOffset = from8Bytes2(cur_ptr + 8);
+        uint32_t valueLen = from4Bytes2(cur_ptr + 16);
+
+        if (ss_key <= max_key && ss_key >= min_key && valueLen != 0) {
+            list.push_back(std::make_tuple(ss_key, dataOffset, valueLen));
+        }
+    }
+
+    return list;
 }
 std::string KVStore::readFromVLog(uint64_t dataOffset, uint32_t valueLen) {
-    std::string vLogName = vlogDir + "/vLog";
-    std::ifstream file(vLogName, std::ios::binary);
+    // 打开文件
+    std::ifstream file(vlogDir, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "Failed to open the file: " << vLogName << std::endl;
+        std::cerr << "Failed to open the file: " << vlogDir << std::endl;
         return "";
     }
-    //seekg 方法将文件指针移动到指定的 dataOffset 位置
+
+    // 将文件指针移动到指定的 dataOffset 位置
     file.seekg(dataOffset, std::ios::beg);
 
     // 读取完整的vLog条目: Magic + checksum + key + vlen + value
     const int headerSize = 1 + 2 + 8 + 4; // Magic (1 byte) + checksum (2 bytes) + key (8 bytes) + vlen (4 bytes)
     std::vector<char> buffer(headerSize + valueLen);
-    file.read(buffer.data(), buffer.size());
 
-    if (!file) {
-        std::cerr << "Failed to read the data from the file: " << vLogName << std::endl;
-        file.close();
+    // 读取数据
+    if (!file.read(buffer.data(), buffer.size())) {
+        std::cerr << "Failed to read the data from the file: " << vlogDir << std::endl;
         return "";
     }
 
-    std::string entry(buffer.begin() + headerSize, buffer.end());
-    file.close();
-    return entry;
+    // 直接从buffer中构建entry字符串
+    return std::string(buffer.data() + headerSize, valueLen);
 }
 
 //根据ssNodeList队列，返回ssTable纯字符串。
@@ -753,28 +994,35 @@ std::list<std::string> KVStore::compaction(std::list<ssNode> ssNodeList) {
         std::ifstream file(ssnode.filename, std::ios::binary);
         if (!file.is_open()) continue;
 
+        // 读取文件内容到字符串
         std::stringstream buffer;
         buffer << file.rdbuf();
         std::string str = buffer.str();
 
-        // 读取文件内容
-        uint64_t timestamp = from8Bytes(str.substr(0, 8));
-        uint64_t num_of_key = from8Bytes(str.substr(8, 8));
-        uint64_t min_key = from8Bytes(str.substr(16, 8));
-        uint64_t max_key = from8Bytes(str.substr(24, 8));
+        // 使用指针解析文件内容
+        const char* ptr = str.data();
+        uint64_t timestamp = from8Bytes2(ptr);
+        ptr += 8;
+        uint64_t num_of_key = from8Bytes2(ptr);
+        ptr += 8;
+        uint64_t min_key = from8Bytes2(ptr);
+        ptr += 8;
+        uint64_t max_key = from8Bytes2(ptr);
+        ptr += 8;
 
         // 保留最大时间戳
         latest_timestamp = std::max(latest_timestamp, timestamp);
 
         // 跳过布隆过滤器
-        size_t offset = 32 + 4 * 2048;
+        ptr += 2048 * 4;
+
         for (uint64_t i = 0; i < num_of_key; ++i) {
-            uint64_t ss_key = from8Bytes(str.substr(offset, 8));
-            offset += 8;
-            uint64_t dataOffset = from8Bytes(str.substr(offset, 8));
-            offset += 8;
-            uint32_t valueLen = from4Bytes(str.substr(offset, 4));
-            offset += 4;
+            uint64_t ss_key = from8Bytes2(ptr);
+            ptr += 8;
+            uint64_t dataOffset = from8Bytes2(ptr);
+            ptr += 8;
+            uint32_t valueLen = from4Bytes2(ptr);
+            ptr += 4;
 
             // 为0表示该数据已被删除
             if (valueLen == 0) continue;
@@ -829,11 +1077,24 @@ std::list<std::string> KVStore::compaction(std::list<ssNode> ssNodeList) {
     return strs;
 }
 
+// 保持辅助函数不变
+uint64_t from8Bytes(const char* data) {
+    uint64_t value;
+    std::memcpy(&value, data, 8);
+    return value;
+}
+
+uint32_t from4Bytes(const char* data) {
+    uint32_t value;
+    std::memcpy(&value, data, 4);
+    return value;
+}
+
 KVStore::ssNode KVStore::writeSSTableToFile(const std::string &str, int level) {
 
     if(level >= this->sslevel.size())
     {
-        utils::mkdir(this->vlogDir + "/Level" + std::to_string(level ));
+        utils::mkdir(this->dataDir + "/Level" + std::to_string(level ));
         ssLevel ss;
         ss.level = level;
         ss.currentNum = 0;
@@ -841,7 +1102,7 @@ KVStore::ssNode KVStore::writeSSTableToFile(const std::string &str, int level) {
     }
     // 时间戳
     uint64_t timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-    std::string filename =  this->vlogDir + "/Level" + std::to_string(level )+ "/ssTable" + std::to_string(this->sslevel[level].currentNum + 1);
+    std::string filename =  this->dataDir + "/Level" + std::to_string(level )+ "/ssTable" + std::to_string(this->sslevel[level].currentNum + 1);
 
     // 将SSTable数据写入文件
     std::ofstream outFile(filename, std::ios::binary);
@@ -864,7 +1125,7 @@ KVStore::ssNode KVStore::writeSSTableToFile(const std::string &str, int level) {
     return newNode;
 }
 
-//返回时间戳最小的
+//返回时间戳最小的和范围冲突的
 std::list<KVStore::ssNode> KVStore::selectNodesForCompaction(int level) {
     std::list<ssNode> nodesToCompact(this->sslevel[level].ssNodes.begin(), this->sslevel[level].ssNodes.end());
 
@@ -878,6 +1139,7 @@ std::list<KVStore::ssNode> KVStore::selectNodesForCompaction(int level) {
 
     std::list<ssNode> ssnodes;
     size_t maxNodes = std::pow(2, level + 1);
+
 
     // 移动超出限制的节点到ssnodes
     while (nodesToCompact.size() > maxNodes) {
