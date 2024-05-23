@@ -5,7 +5,22 @@
 #include <chrono>
 #include <iostream>
 #include <unordered_map>
+#include <filesystem>
+// 将 8 字节的字符串转换为 uint64_t
+uint64_t from8Bytes(const std::string& str) {
+    if (str.size() < 8) throw std::runtime_error("Insufficient data for uint64_t conversion");
+    uint64_t value;
+    std::memcpy(&value, str.data(), 8);
+    return value;
+}
 
+// 将 4 字节的字符串转换为 uint32_t
+uint32_t from4Bytes(const std::string& str) {
+    if (str.size() < 4) throw std::runtime_error("Insufficient data for uint32_t conversion");
+    uint32_t value;
+    std::memcpy(&value, str.data(), 4);
+    return value;
+}
 
 /**
  * Insert/Update the key-value pair.
@@ -124,11 +139,66 @@ KVStore::KVStore(const std::string &dir, const std::string &vlog) : KVStoreAPI(d
 {
     this->dataDir = dir;
     this->vlogDir = vlog;
-    utils::_mkdir("./data");
+    utils::_mkdir(dataDir);
+
+    // 如果数据目录中存在文件，则进行初始化
+    if (std::filesystem::exists(vlogDir) && std::filesystem::file_size(vlogDir) > 0) {
+        KVStore::initialize();
+    }
+
+    // 恢复 head 的正确值
+    Head = std::filesystem::exists(vlogDir) ? std::filesystem::file_size(vlogDir) : 0;
+
+    // 恢复 tail 的正确值
+    Tail = std::filesystem::exists(vlogDir) ? seekDataBlock(vlogDir) : 0;
+
 }
 
+void KVStore::initialize()
+{
+// 检查并加载 SSTable 文件
+    ssLevel newLevel;
+    newLevel.level = 0;
+    newLevel.currentNum = 0;
+    sslevel.push_back(newLevel);
+    for (int i = 0; ; ++i) {
+        std::string dirName = dataDir + "/Level" + std::to_string(i);
+        if (!utils::dirExists(dirName)) break;
+
+        for (const auto& entry : std::filesystem::directory_iterator(dirName)) {
+            std::string filename = entry.path().string();
+            // 读取 SSTable 文件并更新缓存
+            std::ifstream file(filename, std::ios::binary);
+            if (!file.is_open()) continue;
+            std::stringstream buffer;
+            buffer << file.rdbuf();
+            std::string str = buffer.str();
+            uint64_t timestamp = from8Bytes(str.substr(0 , 8));
+            uint64_t keyNum = from8Bytes(str.substr(8,8));
+            uint64_t minKey = from8Bytes(str.substr(16, 8));
+            uint64_t maxKey = from8Bytes(str.substr(24, 8));
+            ssNode node(maxKey, minKey);
+            node.filename = filename;
+            node.str = str;
+            node.timestamp = timestamp;
+            if (i >= sslevel.size()) {
+                ssLevel newLevel;
+                newLevel.level = i;
+                newLevel.currentNum = 0;
+                sslevel.push_back(newLevel);
+            }
+            sslevel[i].currentNum = keyNum;
+            sslevel[i].ssNodes.push_back(node);
+        }
+    }
+}
 KVStore::~KVStore()
 {
+    this;
+    // 在析构函数中将 MemTable 中的所有数据写入 SSTable 和 vLog
+    if (memTable.getSize() > 0) {
+        buildSSTable();
+    }
 }
 
 int MemTable::getMinKey()
@@ -231,11 +301,12 @@ bool KVStore::del(uint64_t key)
             if (key <= this->sslevel[i].ssNodes[j].max && key >= this->sslevel[i].ssNodes[j].min) {
                 std::string fileName = this->sslevel[i].ssNodes[j].filename;
                 bool isExist = false;
+                bool isFound = false;
                 std::ifstream file(fileName, std::ios::binary);
                 std::stringstream buffer;
                 buffer << file.rdbuf();
                 std::string str = buffer.str();
-                auto [dataOffset, valueLen] = findInssTable(str, key, &isExist);
+                auto [dataOffset, valueLen] = findInssTable(str, key, &isExist , &isFound);
                 // 如果找到，就插入一条被删除的记录
                 if (isFound) {
                     if(isExist)
@@ -259,22 +330,26 @@ bool KVStore::del(uint64_t key)
  */
 void KVStore::reset()
 {
-    for(int i = 0 ; i < this->sslevel.size() ; i++)
-    {
-        std::string dirName = this->dataDir + "/Level" + std::to_string(i);
-        if(this->sslevel.size() == 0) return;
-        for(int j = 0 ; j < this->sslevel[i].ssNodes.size() ; j++)
-        {
-            std::string fileName =  this->sslevel[i].ssNodes[j].filename;
-            utils::rmfile(fileName);
+    // 删除所有 SSTable 文件和表示层的目录
+    for (int i = 0; i < sslevel.size(); ++i) {
+        std::string dirName = dataDir + "/Level" + std::to_string(i);
+        for (const auto& ssNode : sslevel[i].ssNodes) {
+            utils::rmfile(ssNode.filename);
         }
         utils::rmdir(dirName);
     }
-    this->sslevel.clear();
-    this->ssTable.clear();
-    this->Head = 0;
-    this->memTable.list.clear();
-    utils::rmfile("./data/vlog");
+
+    // 删除 vLog 文件
+    utils::rmfile(vlogDir);
+
+    // 清除内存中 MemTable 和缓存数据
+    memTable.clear();
+    sslevel.clear();
+    ssTable.clear();
+
+    // 将 tail 和 head 的值置 0
+    Tail = 0;
+    Head = 0;
 }
 
 /**
@@ -335,21 +410,7 @@ void KVStore::scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, s
         return a.first < b.first;
     });
 }
-// 将 8 字节的字符串转换为 uint64_t
-uint64_t from8Bytes(const std::string& str) {
-    if (str.size() < 8) throw std::runtime_error("Insufficient data for uint64_t conversion");
-    uint64_t value;
-    std::memcpy(&value, str.data(), 8);
-    return value;
-}
 
-// 将 4 字节的字符串转换为 uint32_t
-uint32_t from4Bytes(const std::string& str) {
-    if (str.size() < 4) throw std::runtime_error("Insufficient data for uint32_t conversion");
-    uint32_t value;
-    std::memcpy(&value, str.data(), 4);
-    return value;
-}
 /**
  * This reclaims space from vLog by moving valid value and discarding invalid value.
  * chunk_size is the size in byte you should AT LEAST recycle.
@@ -386,7 +447,7 @@ void KVStore::gc(uint64_t chunk_size) {
         const char* ptr = buffer.data();
         size_t processedSize = 0;
 
-        while (processedSize < bufferSize) {
+        while (processedSize < bufferSize && totalProcessedSize < chunk_size) {
             // 读取头部：Magic (1字节) + 校验和 (2字节) + key (8字节) + vlen (4字)
             const int headerSize = 1 + 2 + 8 + 4;
             if (bufferSize - processedSize < headerSize) {
@@ -1033,8 +1094,8 @@ std::list<std::string> KVStore::compaction(std::list<ssNode> ssNodeList) {
             uint32_t valueLen = from4Bytes2(ptr);
             ptr += 4;
 
-            // 为0表示该数据已被删除
-            if (valueLen == 0) continue;
+//            // 为0表示该数据已被删除
+//            if (valueLen == 0) continue;
 
             // 如果键已存在且新的时间戳更大，则覆盖
             auto it = sstable_map.find(ss_key);
@@ -1157,4 +1218,24 @@ std::list<KVStore::ssNode> KVStore::selectNodesForCompaction(int level) {
     }
 
     return ssnodes;
+}
+off_t KVStore::seekDataBlock(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open the file: " << path << std::endl;
+        return 0;
+    }
+
+    off_t tail = 0;
+    char byte;
+    while (file.read(&byte, 1)) {
+        if (byte != char(0)) {
+            file.seekg(-1, std::ios::cur); // 移动文件指针到该字节的位置
+            break;
+        }
+        ++tail;
+    }
+
+    file.close();
+    return tail;
 }

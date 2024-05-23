@@ -165,4 +165,8 @@ public:
     void removeCompactedNodes(ssLevel &level, const std::list<ssNode> &selectedNodes);
 
     std::list<ssNode> selectNodesForCompaction(int level);
+
+    off_t seekDataBlock(const std::string& path);
+
+    void initialize();
 };
