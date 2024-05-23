@@ -17,7 +17,7 @@ struct QuadlistNode
     QuadlistNode *above;
     QuadlistNode *below;
     QuadlistNode(uint64_t k , std::string e = "" , QuadlistNode *p = NULL, QuadlistNode *s = nullptr, QuadlistNode *a = nullptr, QuadlistNode *b = nullptr):
-    key(k),entry(e),prev(p),succ(s),above(a),below(b){
+            key(k),entry(e),prev(p),succ(s),above(a),below(b){
         key = k;
     }
     QuadlistNode* insertAsSuccAbove(uint64_t k ,std::string e , QuadlistNode *b =nullptr)
@@ -87,7 +87,7 @@ public:
 
 class KVStore : public KVStoreAPI
 {
-	// You can add your implementation here
+    // You can add your implementation here
 private:
 
     std::string ssTable;
@@ -129,34 +129,34 @@ public:
 
     void appendVLog();
 
-	KVStore(const std::string &dir, const std::string &vlog);
+    KVStore(const std::string &dir, const std::string &vlog);
 
-	~KVStore();
+    ~KVStore();
 
-	void put(uint64_t key, const std::string &s) override;
+    void put(uint64_t key, const std::string &s) override;
 
-	std::string get(uint64_t key) override;
+    std::string get(uint64_t key) override;
 
-	bool del(uint64_t key) override;
+    bool del(uint64_t key) override;
 
-	void reset() override;
+    void reset() override;
 
-	void scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, std::string>> &list) override;
+    void scan(uint64_t key1, uint64_t key2, std::list<std::pair<uint64_t, std::string>> &list) override;
 
     void compactLevel(int level);
 
     void selfCompaction(int level);
 
-	void gc(uint64_t chunk_size) override;
+    void gc(uint64_t chunk_size) override;
 
     void SSTableCompaction() ;
 
-    std::tuple<uint64_t, uint32_t> findInssTable(const std::string &str,uint64_t key, bool *isExist);
+    std::tuple<uint64_t, uint32_t> findInssTable(const std::string &str,uint64_t key, bool *isExist , bool *isFound);
 
     std::string readFromVLog(uint64_t dataOffset, uint32_t valueLen);
 
     std::list<std::tuple<uint64_t, uint64_t  ,uint32_t>>
-        findInSsTableByRange(const std::string& str, uint64_t max_key, uint64_t min_key);
+    findInSsTableByRange(const std::string& str, uint64_t max_key, uint64_t min_key);
 
     ssNode writeSSTableToFile(const std::string &str , int level);
 

@@ -188,14 +188,17 @@ std::string KVStore::get(uint64_t key)
 //                    std::ifstream file(filename);
 //                    std::cout << "find in ssTable";
                     bool isExist = false;
+                    bool isFound = false;
                     std::ifstream file(filename, std::ios::binary);
                     std::stringstream buffer;
                     buffer << file.rdbuf();
                     std::string str = buffer.str();
-                    auto [dataOffset, valueLen] = findInssTable(str ,key , &isExist);
-                    if(isExist)
+                    auto [dataOffset, valueLen] = findInssTable(str ,key , &isExist , &isFound);
+                    if(isFound )
                     {
-                        return KVStore::readFromVLog(dataOffset , valueLen);
+                        if(isExist)
+                            return KVStore::readFromVLog(dataOffset , valueLen);
+                        return "";
                     }
                 }
             }
@@ -234,9 +237,13 @@ bool KVStore::del(uint64_t key)
                 std::string str = buffer.str();
                 auto [dataOffset, valueLen] = findInssTable(str, key, &isExist);
                 // 如果找到，就插入一条被删除的记录
-                if (isExist) {
-                    memTable.put(key, "~DELETED~");
-                    return true;
+                if (isFound) {
+                    if(isExist)
+                    {
+                        memTable.put(key, "~DELETED~");
+                        return true;
+                    }
+                    return false;
                 }
             }
         }
@@ -763,7 +770,7 @@ void KVStore::compactLevel(int level) {
     }
 
     if (sslevel.size() > level + 1)  // 不存在level1
-    // 在下一层中找到所有有交集的文件
+        // 在下一层中找到所有有交集的文件
         for (const auto& node : sslevel[level + 1].ssNodes) {
             for (const auto& selectedNode : selectedNodes) {
                 if (node.min <= selectedNode.max && node.max >= selectedNode.min) {
@@ -837,7 +844,7 @@ uint32_t from4Bytes2(const char* data) {
     return value;
 }
 
-std::tuple<uint64_t, uint32_t> KVStore::findInssTable(const std::string& str, uint64_t key, bool *isExist) {
+std::tuple<uint64_t, uint32_t> KVStore::findInssTable(const std::string& str, uint64_t key, bool *isExist , bool *isFound) {
     const char* ptr = str.data();
 
     // 读取前32字节的元数据
@@ -875,6 +882,7 @@ std::tuple<uint64_t, uint32_t> KVStore::findInssTable(const std::string& str, ui
         uint64_t ss_key = from8Bytes2(cur_ptr);
 
         if (key == ss_key) {
+            *isFound = true;
             uint64_t dataOffset = from8Bytes2(cur_ptr + 8);
             uint32_t valueLen = from4Bytes2(cur_ptr + 16);
             return std::make_tuple(dataOffset, valueLen);
@@ -887,6 +895,7 @@ std::tuple<uint64_t, uint32_t> KVStore::findInssTable(const std::string& str, ui
         }
     }
 
+    *isFound = false;
     *isExist = false;
     return std::make_tuple(0, 0);
 }
